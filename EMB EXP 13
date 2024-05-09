@@ -1,0 +1,107 @@
+#include <LPC17xx.H>
+#include "GLCD.H"
+#include "Serial.h"
+#define __FI 1
+
+unsigned int Adc;
+unsigned long  Low_adc,High_adc,relay;
+
+read_adc()
+{
+	 unsigned long status,i;
+	 LPC_GPIO0->FIOPIN |=  (1 << 26);                      /* (P0.26 = 1) Start conversion of ADC */
+	 status = ((LPC_GPIO1->FIOPIN & 0x00080000) >> 19);    /*  P1.19      Read status of ADC      */
+	 while((status & 0x01) != 0x01)
+					 status = ((LPC_GPIO1->FIOPIN & 0x00080000) >> 19);
+	 
+	 LPC_GPIO0->FIOPIN &=  ~(1 << 26);                      /* (P0.26 = 0)  Stop conversion of ADC */
+	 LPC_GPIO0->FIOPIN &=  ~(1 << 25);                      /* (P0.25 = 0)  Enable outputs  */
+	 LPC_GPIO0->FIOPIN &=  ~(1 << 23);                      /* (P0.23 = 0) Activate B1 to B8 outputs */
+	 for(i=0;i<10000;i++);  
+	 										Low_adc = (LPC_GPIO0->FIOPIN & 0x007F8000); /* (P0.22 to P0.15) Read lower byte of ADC */
+	 Low_adc = (Low_adc >> 15) & 0xFF;
+	 
+	 LPC_GPIO0->FIOPIN |= (1 << 23);                        /* (P0.23 = 1) Deactivate B1 to B8 outputs */
+	 LPC_GPIO0->FIOPIN &= ~(1 << 24);                       /* (P0.24 = 0) Activate B9 to B12 and POL, over range outputs */
+	 for(i=0;i<10000;i++);  
+										High_adc = (LPC_GPIO0->FIOPIN & 0x00078000); /* (P0.18 to P0.15)  Read higher byte of ADC */
+	 High_adc = (High_adc >> 15) & 0x0F;
+		
+	 LPC_GPIO0->FIOPIN |= (1 << 24);                    /* (P0.24 = 1)  deactivate B9 to B12 and POL, over range outputs */
+	 LPC_GPIO0->FIOPIN |= (1 << 25);                    /* (P0.25 = 1) Disable outputs */
+	 LPC_GPIO0->FIOPIN &=   ~(1 << 26);                 /* (P0.26 = 0)  Stop conversion of ADC */
+}
+
+
+main()
+{	   
+	float Temp,Vol,Res;
+	unsigned char Temp1,Temp2,Temp3;
+
+	LPC_SC->PCONP |= (1<<15);
+	LPC_GPIO0->FIODIR  |=   0x7F800000;            /* Make portA(P0.15 to P0.22) as input and portC (P0.23 to P0.30) as o/p  */
+	LPC_GPIO1->FIODIR  |=   (1 << 20);             /* Make P1.20 as o/p  */
+  LPC_PINCON->PINMODE0   |=   0xC0000000;        /* Configure Pull-down for P0.15,P0.16,P0.17,P0.18,P0.19,P0.20,P0.21,P0.22*/
+	LPC_PINCON->PINMODE1   |=   0x00003FFF;
+	
+	LPC_GPIO1->FIOPIN   &=  ~(1 << 20);            /* (P1.20=0) switch OFF relay  */
+	LPC_GPIO0->FIOPIN   &=  ~(1 << 26);            /* (P0.26 = 0) STOP conversion of ADC */
+	relay = 10;
+  SER_Init();
+	
+	#ifdef __USE_LCD
+  GLCD_Init();                               /* Initialize graphical LCD      */
+
+  GLCD_Clear(White);                         /* Clear graphical LCD display   */
+  GLCD_SetBackColor(Blue);
+  GLCD_SetTextColor(White);
+  GLCD_DisplayString(0, 0, __FI, "        ESA         ");
+  GLCD_DisplayString(1, 0, __FI, "     Bangalore      ");
+  GLCD_DisplayString(2, 0, __FI, "  www.esaindia.com  ");
+  GLCD_SetBackColor(White);
+  GLCD_SetTextColor(Blue);
+  GLCD_DisplayString(3, 0, __FI, "TEMP TRANSDUCER TXDR");
+
+#endif
+	 
+	while(1)
+   	{
+    read_adc();			  /* Read ADC  */
+		Adc = High_adc; 
+		Adc <<= 8;
+		Adc = Adc | Low_adc;
+			
+	   	if( (Adc > 0x0656) && (relay != 0))  /* IF greater than 0x0656 Switch OFF relay */
+	   	{
+				GLCD_DisplayString(5, 0, __FI, "Relay OFF");	
+				SER_SendString("\n\rRELAY OFF");
+				 LPC_GPIO1->FIOPIN  &= ~(1 << 20);     /* (P1.20=0) switch OFF relay  */
+						relay = 0;
+	   	} 
+	   	else if ( (Adc < 0x5B9) && (relay!= 1))  
+	   	{ 
+				 SER_SendString("\n\rRELAY ON"); 
+				GLCD_DisplayString(5, 0, __FI, "Relay ON ");	
+				 LPC_GPIO1->FIOPIN  |=  (1 << 20);     
+						relay = 1;
+	   	}
+
+	  	Vol  =-((Adc/10)*0.000488);	       
+	 
+	  	Res  =((100*(1.8-Vol)-100*Vol)100)   /(100*Vol + 100(1.8+Vol)); /* Resistance Value */
+	  	Res  = Res - 100;  
+	  	Temp = Res/ 0.384; 
+
+	  	Temp1 = Temp;
+	  	Temp2 = (0x30 + (Temp1 / 0x0A));
+	  	Temp3 = (0x30 + (Temp1 % 0x0A));
+	 	  GLCD_DisplayString(6, 0, __FI, "Temperature=");	 
+			GLCD_DisplayChar(6, 13, __FI, Temp2);
+			GLCD_DisplayChar(6, 14, __FI, Temp3);
+	  	SER_SendString("  Temperature = ");
+			SER_PutChar(Temp2);          
+	  	SER_PutChar(Temp3); 
+			GLCD_DisplayString(6, 16, __FI, "'C");
+	  	SER_SendString("'C\n\r");   
+   }
+}
